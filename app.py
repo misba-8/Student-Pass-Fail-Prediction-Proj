@@ -50,6 +50,48 @@ OPTIONS = {
 records = []
 
 
+def _fix_sklearn_compatibility(estimator):
+    """
+    Fixes scikit-learn version mismatch when an older model (e.g. scikit-learn 1.3.x)
+    is loaded into a newer environment (e.g. scikit-learn >= 1.4 on Vercel).
+    Older SimpleImputer objects do not have the '_fill_dtype' attribute required by scikit-learn >= 1.4.
+    """
+    if estimator is None:
+        return
+
+    try:
+        from sklearn.impute import SimpleImputer
+
+        def walk(obj):
+            if isinstance(obj, SimpleImputer):
+                if not hasattr(obj, "_fill_dtype") and hasattr(obj, "statistics_"):
+                    try:
+                        obj._fill_dtype = obj.statistics_.dtype
+                    except Exception:
+                        pass
+            if hasattr(obj, "steps"):
+                for _, step in obj.steps:
+                    walk(step)
+            if hasattr(obj, "named_steps"):
+                for step in obj.named_steps.values():
+                    walk(step)
+            if hasattr(obj, "named_transformers_"):
+                for step in obj.named_transformers_.values():
+                    walk(step)
+            if hasattr(obj, "transformers_"):
+                for trans in obj.transformers_:
+                    if isinstance(trans, (tuple, list)) and len(trans) > 1:
+                        walk(trans[1])
+            if hasattr(obj, "transformers"):
+                for trans in obj.transformers:
+                    if isinstance(trans, (tuple, list)) and len(trans) > 1:
+                        walk(trans[1])
+
+        walk(estimator)
+    except Exception:
+        pass
+
+
 def load_model():
     global bundle, model, dataset_averages, overall_average, training_rows, dataset_distribution
 
@@ -71,6 +113,8 @@ def load_model():
 
     if not hasattr(model, "predict"):
         raise ValueError("The saved model does not support predict().")
+
+    _fix_sklearn_compatibility(model)
 
     dataset_averages = bundle.get("dataset_averages", dataset_averages)
     overall_average = bundle.get("overall_average", 0)
@@ -145,6 +189,7 @@ def predict():
             student[field] = value
 
         features = pd.DataFrame([student], columns=CATEGORICAL + NUMERICAL)
+        _fix_sklearn_compatibility(model)
         predicted = float(model.predict(features)[0])
         predicted = float(np.clip(predicted, 0, 100))
 
